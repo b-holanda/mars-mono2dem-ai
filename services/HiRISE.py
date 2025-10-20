@@ -7,9 +7,9 @@ from pathlib import Path
 import re
 
 from bridges.http import Http
-from utils.logger import get_logger
+from utils.logger import Logger
 
-logger = get_logger(__name__)
+console = Logger().console
 
 DEM_PATTERN = r"\.IMG$"
 IS_FILE_PAT = r"\.[A-Za-z0-9]{1,5}$"
@@ -63,12 +63,10 @@ class HiRISEResolver:
     def find_next(self) -> Optional[Tuple[str, str]]:
         while self.dem_stack:
             top = self.dem_stack[-1]
-            logger.info(f"Looking inside: {top.link}")
 
             if self._is_dem(top.link):
                 key = self._dem_key(top.link)
                 if key in self._seen_dem_keys:
-                    logger.info(f"Duplicate DEM skipped: {top.link}")
                     self.dem_stack.pop()
                     continue
 
@@ -87,11 +85,9 @@ class HiRISEResolver:
 
             # carrega filhos só uma vez por nó
             if not top.loaded and not self._is_file(top.link):
-                logger.info(f"Loading children for: {top.link}")
                 self._load_children_into_node(top)
                 continue
 
-            logger.info("Backtracking…")
             self.dem_stack.pop()
 
         return None
@@ -103,7 +99,6 @@ class HiRISEResolver:
         node.loaded = True  # marque já, mesmo que falhe, para não ficar em loop
 
         if not html_str:
-            logger.info("Empty response.")
             node.child = []
             return
 
@@ -123,7 +118,6 @@ class HiRISEResolver:
 
             # >>> use SEMPRE o pool para reusar nós
             children.append(self._get_node(child_url))
-            logger.info(f" child -> {child_url}")
 
         # diretórios primeiro, depois arquivos, ambos ordenados por nome
         children.sort(key=lambda n: (self._is_file(n.link), n.link.lower()))
@@ -146,22 +140,18 @@ class HiRISEService:
     def download_samples(self):
         resolver = HiRISEResolver(root=self.http.host, http=self.http)
 
-        while self.samples > 0:
-            dem_url, source_url = resolver.find_next()
+        with console.status("[bold green]Fazendo Download dos pares...") as status:
+            while self.samples > 0:
+                dem_url, source_url = resolver.find_next()
 
-            base_dir = Path(__file__).resolve().parent.parent
-            sample_dir = base_dir / "datasets" / "sources" / str(self.samples)
-            sample_dir.mkdir(parents=True, exist_ok=True)
+                base_dir = Path(__file__).resolve().parent.parent
+                sample_dir = base_dir / "datasets" / "sources" / str(self.samples)
+                sample_dir.mkdir(parents=True, exist_ok=True)
 
-            dem_path = sample_dir / "DEM.IMG"
-            mono_path = sample_dir / "MONO.JP2"
+                dem_path = sample_dir / "DEM.IMG"
+                mono_path = sample_dir / "MONO.JP2"
 
-            logger.info(f"Downloading DEM samples: {dem_url}")
+                self.http.download(url=dem_url, destination=str(dem_path), console=status.console)
+                self.http.download(url=source_url, destination=str(mono_path), console=status.console)
 
-            self.http.download(url=dem_url, destination=str(dem_path))
-
-            logger.info(f"Downloading source samples: {source_url}")
-
-            self.http.download(url=source_url, destination=str(mono_path))
-
-            self.samples -= 1
+                self.samples -= 1

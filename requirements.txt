@@ -2,3 +2,6 @@ urllib3
 requests
 pyyaml
 beautifulsoup4
+numpy
+rasterio
+rich

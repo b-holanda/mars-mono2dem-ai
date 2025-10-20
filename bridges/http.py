@@ -1,13 +1,14 @@
 from dataclasses import dataclass
 from requests import Session
-from requests.exceptions import RequestException
+from rich.console import Console
+from rich.progress import Progress, TextColumn, BarColumn, TotalFileSizeColumn, DownloadColumn
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 from typing import Any
 
-from utils.logger import get_logger
+from utils.logger import Logger
 
-logger = get_logger(__name__)
+console = Logger().console
 
 @dataclass(frozen=True)
 class HttpConfig:
@@ -32,23 +33,40 @@ class Http:
     def get(self, url: str) -> bytes | Any:
         session = _make_session()
 
-        try:
-            response = session.get(url)
-            response.raise_for_status()
+        response = session.get(url)
+        response.raise_for_status()
 
-            return response.content
-        except RequestException as e:
-            logger.error(f"Failed request for razon: {e}")
+        return response.content
 
-    def download(self, url: str, destination: str):
+    def download(self, url: str, destination: str, console: Console):
         session = _make_session()
+        response = session.head(url)
+
+        response.raise_for_status()
+
+        content_length = float(response.headers.get('Content-Length') or 0)
+        chunk_size = 128000
+        step = (100*chunk_size)/content_length
+
+        stream = session.get(url, stream=True)
+
+        progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            console=console
+        )
+
+        progress.start()
+
+        task = progress.add_task(f"[red]Baixando {url.split("/")[-1]}", total=content_length)
 
         try:
-            response = session.get(url, stream=True)
-
             with open(destination, 'wb') as fd:
-                for chunk in response.iter_content(chunk_size=128):
+                for chunk in stream.iter_content(chunk_size=chunk_size):
                     fd.write(chunk)
-
-        except RequestException as e:
-            logger.error(f"Failed request for razon: {e}")
+                    progress.update(task, advance=chunk_size)
+        except Exception as e:
+            raise e
+        finally:
+            progress.stop()
