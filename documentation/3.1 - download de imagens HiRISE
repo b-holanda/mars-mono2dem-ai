@@ -1,0 +1,130 @@
+# Metodologia — Experimento 1 (Coleta Automatizada de Pares HiRISE)
+**Projeto:** Geração de DEMs de alta resolução para Marte via IA (baseline de dados)
+**Escopo do experimento:** _web scraping_ estruturado do repositório HiRISE/PDS para obter pares `DEM.IMG` (DTMs/DEMs) e `MONO.JP2` (imagem ortorretificada/RED), compondo amostras supervisionadas para treinamento e validação.
+
+---
+
+## 1. Motivação e enquadramento
+A criação de DEMs HiRISE de alta resolução é tradicionalmente conduzida com a **NASA Ames Stereo Pipeline (ASP)**, empregando correlação estéreo, _bundle adjustment_ e triangulação para obter malhas altimétricas de 1–2 m e controle absoluto por alinhamento ao **MOLA** (Hepburn et al., 2019; Moratto et al., 2010). Para treinar e avaliar o modelo proposto baseado em **Vision Transformers (ViT)** para predição densa de profundidade/elevação (Ranftl et al., 2021; Schiavella et al., 2025), é indispensável um **corpus volumoso e consistente** de pares **(imagem→DEM)** extraídos de forma **reprodutível**. Este experimento estabelece tal corpus por meio de um coletor automatizado.
+
+---
+
+## 2. Fonte dos dados e pressupostos
+- **Repositório HiRISE (PDS/NASA/USGS)**: estrutura hierárquica de diretórios com observações e produtos derivados (ORI/RED, DTM/DEM).
+- **Produtos de interesse**:
+  - `DEM.IMG` (DTM/DEM) — alvo primário para rótulo supervisionado.
+  - `*_RED.JP2` (imagem ortorretificada) — entrada monocular correspondente à observação.
+- **Hipótese operacional**: a convenção de nomes/paths (e.g., `.../DTM/ESP/<orb>/<pair_id>/...IMG` e `.../RDR/<mission>/<orb>/<obs_id>/<obs_id>_RED.JP2`) permite **derivar deterministicamente** o caminho da imagem fonte a partir do caminho do DEM, preservando a coerência par-imagem↔DEM. Esta prática segue a **organização canônica** relatada em materiais do ASP/USGS e na literatura (Hepburn et al., 2019; Moratto et al., 2010).
+
+---
+
+## 3. Arquitetura do coletor
+A implementação (Python) segue um **desenho orientado a grafos/árvore** com _caching_ de nós e varredura **em profundidade** (DFS), garantindo **eficiência** e **não repetição** de downloads.
+
+### 3.1. Estruturas de dados centrais
+- **`HiRISENode`**: representa um “diretório ou recurso” no repositório. Campos: `link` (URL), `loaded` (se os filhos já foram parseados) e `child` (lista de subnós).
+- **_Pool_ de nós (`_node_pool`)**: _cache_ **deduplicado** por URL. A função `_get_node(link)` **garante identidade única por link** (mesmo objeto para o mesmo endereço), evitando reprocessamentos, ciclos e excesso de memória.
+- **Pilha `dem_stack`**: controla a ordem de visita (DFS); começa em `.../DTM/ESP/` (nível onde residem DTMs HiRISE ESP*).
+- **Conjuntos de controle**: `_seen_dem_keys` evita **revisita** ao mesmo DEM (chave derivada de `stem` do caminho).
+
+> **Justificativa**: O uso de DFS com _caching_ local reduz chamadas HTTP redundantes, melhora latência e reforça a reprodutibilidade da coleta—princípios essenciais em pipelines científicos (Moratto et al., 2010).
+
+### 3.2. Discriminação de arquivos e diretórios
+- **Heurística por _regex_**:
+  - `IS_FILE_PAT = r"\.[A-Za-z0-9]{1,5}$"` diferencia **arquivos** (possuem extensão curta) de **diretórios**.
+  - `DEM_PATTERN = r"\.IMG$"` reconhece **candidatos a DEM** (produtos *IMG*).
+- **Normalização de URLs de diretório**: ao detectar itens sem extensão, **garante-se _trailing slash_** (`/`) para consistência de `urljoin` e prevenção de _double-join_.
+- **Ordenação determinística**: filhos são ordenados **primeiro diretórios, depois arquivos**, por nome _case-insensitive_, para uma travessia previsível e replicável.
+
+> **Justificativa**: A normalização/ordenação é crucial para **determinismo experimental**, facilitando auditoria e depuração (Hepburn et al., 2019).
+
+### 3.3. Carregamento preguiçoso (_lazy_) e idempotência
+- **`_load_children_into_node`**: faz _parse_ HTML via **BeautifulSoup** **apenas uma vez por nó** (`loaded=True`), salvando filhos no próprio nó (cache local).
+- **Robustez a falhas**: se a resposta HTTP vier vazia/erro, o nó é marcado como `loaded` para **evitar _loops_ de re-tentativa**; a lista de filhos é setada vazia (falha suave).
+
+> **Justificativa**: Em repositórios grandes, _lazy loading_ e **idempotência** são boas práticas para não sobrecarregar o servidor e manter o coletor **estável** sob condições adversas (timeouts, flutuações de rede).
+
+### 3.4. Seleção do próximo par (núcleo — `find_next`)
+1. **Topo da pilha** → se é um `DEM.IMG`:
+   - Gera `key` única com `_dem_key`; se já visto, **descarta**.
+   - Caso novo, marca como visto e **computa o par fonte** (`compute_source_path`).
+   - **Avança a pilha imediatamente** (faz `pop`) para não reprocessar o mesmo `.IMG`.
+   - Retorna **tupla (`dem_url`, `source_url`)**.
+2. **Se não é arquivo DEM**:
+   - Se possuir filhos ainda não varridos, **desce** (DFS).
+   - Se ainda não foi carregado e não é arquivo, **carrega filhos** (_lazy_).
+   - Caso contrário, **retira da pilha** e continua.
+
+> **Justificativa**: Essa lógica garante **progresso estrito** (sem _starvation_), não revisita nós consumidos e prioriza **eficiência I/O**—fundamental para escalar a coleta a milhares de pares.
+
+### 3.5. Derivação do caminho da imagem fonte (`compute_source_path`)
+A partir de `dem_url`, o algoritmo infere:
+- **`dem_mono_pair`**: penúltimo token do caminho (e.g., identificador do par estéreo).
+- **`orb`**: antepenúltimo token (órbita/grupo).
+- **`monocular_left_observation`**: `AAA_BBB_CCC` obtido pela decomposição do par (`split('_')`), correspondente à observação “left” canônica.
+- **`source_name`**: concatena `_RED.JP2` ao identificador.
+- **`source_root`**: raiz `.../RDR/...` do repositório.
+- **Retorno**: `.../RDR/<AAA>/<orb>/<AAA_BBB_CCC>/<AAA_BBB_CCC>_RED.JP2`.
+
+> **Justificativa**: A **consistência de nomenclatura** entre DTM/DEM (DTM/ESP) e ORI/RED (RDR) nos acervos HiRISE/USGS permite a **vinculação determinística** do par imagem↔DEM sem heurística de conteúdo, simplificando a construção do _ground truth_ (Hepburn et al., 2019).
+
+---
+
+## 4. Camada de I/O e persistência local
+- **HTTP**: o wrapper `Http` concentra _timeouts_, _retries_ e escrita segura (download atômico, quando aplicável).
+- **Portabilidade de caminhos**: usa-se **`pathlib`** para compor `datasets/sources/{i}/(DEM.IMG|MONO.JP2)` de forma **agnóstica a SO** (Windows/Linux/macOS).
+- **Estrutura de _dataset_** (por amostra):
+  ```text
+  datasets/
+    sources/
+      1/
+        DEM.IMG
+        MONO.JP2
+      2/
+        DEM.IMG
+        MONO.JP2
+      ...
+  ```
+- **Registro/telemetria**: `Logger().console.status(...)` exibe progresso e permite diagnóstico do ciclo de coleta.
+
+> **Justificativa**: A **organização determinística** e **portável** de arquivos facilita as próximas fases (padronização, normalização, _tiling_ e treinamento), princípios alinhados a pipelines científicos reproduzíveis.
+
+---
+
+## 5. Boas práticas e extensões recomendadas
+- **Integridade**: checksum (e.g., SHA-256) e verificação de tamanho/CRC quando disponível nos _manifests_ do PDS.
+- **Respeito a servidores**: _rate limiting_ e _backoff_ exponencial para não saturar o serviço remoto.
+- **Metadados**: armazenar rótulos (PDS label) lado a lado para posterior alinhamento a MOLA/geoide e filtragem de qualidade (Hepburn et al., 2019).
+- **Paralelismo controlado**: fila de trabalho (thread/async) com limite de conexões, mantendo a lógica de **não repetição** via `_seen_dem_keys` e `_node_pool`.
+- **Validação cruzada**: amostrar pares em regiões diversas (lat/long, tipos de terreno) para diversidade estatística, conforme recomendado em setups de aprendizado profundo (Ranftl et al., 2021).
+
+---
+
+## 6. Relação com o pipeline ASP e a proposta ViT
+- O coletor **não substitui** o ASP; ele **aproveita** o acervo que o ASP (e pipelines equivalentes) ajudaram a consolidar (DTMs de referência) — base supervisionada para o ViT.
+- A coleta sistemática **reduz a barreira** de entrada para experimentação com **modelos de predição densa**, cuja eficácia em profundidade monocular e eficiência computacional (com atenções eficientes) é relatada por Ranftl et al. (2021) e Schiavella et al. (2025).
+- Em fases futuras, DEMs **gerados pelo ASP** poderão servir de alvo e de **_teacher forcing_** (ou distilação) para o modelo generativo, preservando controle altimétrico (MOLA) e qualidade geométrica.
+
+---
+
+## 7. Limitações do experimento
+- A inferência do caminho `RED.JP2` assume **nomenclatura canônica**; variações históricas podem requerer tabelas de _lookup_ ou leitura dos **labels PDS**.
+- **Erros transitórios de rede** e páginas com **HTML atípico** exigem _fallbacks_ adicionais (e.g., retries + _parsers_ mais estritos).
+- O experimento **não executa validação geodésica** pós-download — tarefa reservada à etapa de padronização/QA.
+
+---
+
+## 8. Conclusão
+O experimento 1 entrega um **pipeline robusto e reprodutível** de coleta de pares HiRISE (imagem RED + DEM), fundamentado em boas práticas de varredura (DFS + cache de nós + carregamento _lazy_), **deduplicação**, **portabilidade** de caminhos e **determinismo** na travessia/ordenação. Este alicerce é crítico para treinar e comparar modelos ViT de predição densa contra as referências produzidas via ASP, acelerando a pesquisa rumo a DEMs de **qualidade ASP** com **inferência rápida**.
+
+---
+
+## Referências
+
+HEPBURN, A. J.; HOLT, T.; HUBBARD, B.; NG, F. Creating HiRISE digital elevation models for Mars using the open-source Ames Stereo Pipeline. *Geoscience Instrumentation, Methods and Data Systems*, v. 8, p. 293–313, 2019.
+
+MORATTO, Z. M.; BROXTON, M. J.; et al. *Ames Stereo Pipeline, NASA’s open source automated geodesy and stereogrammetry tools*. 2010.
+
+RANFTL, René; BOCHKOVSKIY, Alexey; KOLTUN, Vladlen. Vision Transformers for Dense Prediction. *arXiv*, 2021. Disponível em: https://arxiv.org/abs/2103.13413. Acesso em: 17 out. 2025.
+
+SCHIAVELLA, Claudio; CIRILLO, Lorenzo; PAPA, Lorenzo; RUSSO, Paolo; AMERINI, Irene. Efficient attention vision transformers for monocular depth estimation on resource-limited hardware. *Scientific Reports*, v. 15, n. 1, p. 24001, 2025. DOI: 10.1038/s41598-025-06112-8.
