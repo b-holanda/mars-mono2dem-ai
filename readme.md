@@ -19,9 +19,29 @@ sudo apt update
 ```
 
 ```bash
-sudo apt install -y gdal-bin libgdal-dev python3-gdal zip unzip
+sudo apt install -y gdal-bin \
+  libgdal-dev \
+  python3-gdal \
+  zip \
+  unzip \
+  python3.12-venv \
+  python-is-python3 \
+  python3-dev \
+  build-essential \
+  g++ \
+  libproj-dev \
+  proj-bin \
+  libgeos-dev \
+  libtiff-dev \
+  libopenjp2-7 \
+  libopenjp2-7-dev \
+  libjpeg-dev \
+  libzstd-dev \
+  libdeflate-dev
 ```
-
+```bash
+export GDAL_CONFIG=/usr/bin/gdal-config
+````
 ### Python env
 
 ```bash
