@@ -6,7 +6,7 @@ gdal:
   resampling: "bilinear" # "nearest","bilinear","cubic"
   dem_nodata: -32767.0
   source_path: "datasets"
-  max_workers: 8
+  max_workers: 4
   driver: "COG"
   compressor_dem: "DEFLATE"
   compressor_mono: "DEFLATE"
