@@ -53,6 +53,7 @@ def convert_sources():
             wrap_mem_limit=gdal_config_raw.get("wrap_mem_limit", 536870912),
             overview_method=gdal_config_raw.get("overview_method", "BILINEAR"),
             gdal_cache=gdal_config_raw.get("gdal_cache", 6144),
+            predicator_dem=gdal_config_raw.get("predicator_dem", 2),
             num_threads=gdal_config_raw.get("num_threads", "ALL_CPUS"),
             samples= (config().get("hirise") or {}).get("samples", 100),
 

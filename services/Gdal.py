@@ -30,6 +30,7 @@ class GdalConfig:
     overview_method: str
     gdal_cache: int
     num_threads: str
+    predicator_dem: int
 
 class Gdal:
     def __init__(self, config: GdalConfig):
@@ -45,6 +46,7 @@ class Gdal:
         self.overview_method = config.overview_method
         self.gdal_cache = config.gdal_cache
         self.num_threads = config.num_threads
+        self.predicator_dem = config.predicator_dem
 
         base_dir = Path(__file__).resolve().parent.parent
 
@@ -122,7 +124,30 @@ class Gdal:
         return mono_tif
 
     def _convert_dem_img_to_tif(self, dem_img: Path, dem_raw_tif: Path):
-        pass
+        with rio.open(dem_img) as source:
+            profile = source.profile.copy()
+            profile.update({
+                "driver": self.driver,
+                "compress": self.compressor_dem,
+                "blocksize": self.blocksize,
+                "nodata": self.dem_nodata,
+                "BIGTIFF": "IF_SAFER",
+                "NUM_THREADS": self.num_threads,
+                "predictor": self.predicator_dem,
+                "OVERVIEW_RESAMPLING": self.overview_method.upper()
+            })
+
+        data = source.read(1)
+
+        if source.nodata is None:
+            mask = (data <= -32766.5) | ~np.isfinite(data)
+            if mask.any():
+                data = data.astype(profile["dtype"], copy=True)
+                data[mask] = self.dem_nodata
+
+        with rio.open(dem_raw_tif, "w", **profile) as dst:
+            dst.write(data, 1)
+            dst.update_tags(SOURCE=str(dem_img.name))
 
     def _align_dem_to_mono(self, dem_img: Path, mono_tif: Path, dem_aligned_tif: Path):
         pass
