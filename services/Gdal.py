@@ -30,7 +30,7 @@ class GdalConfig:
     overview_method: str
     gdal_cache: int
     num_threads: str
-    predicator_dem: int
+    predictor_dem: int
 
 class Gdal:
     def __init__(self, config: GdalConfig):
@@ -46,7 +46,7 @@ class Gdal:
         self.overview_method = config.overview_method
         self.gdal_cache = config.gdal_cache
         self.num_threads = config.num_threads
-        self.predicator_dem = config.predicator_dem
+        self.predictor_dem = config.predictor_dem
 
         base_dir = Path(__file__).resolve().parent.parent
 
@@ -133,21 +133,61 @@ class Gdal:
                 "nodata": self.dem_nodata,
                 "BIGTIFF": "IF_SAFER",
                 "NUM_THREADS": self.num_threads,
-                "predictor": self.predicator_dem,
+                "predictor": self.predictor_dem,
                 "OVERVIEW_RESAMPLING": self.overview_method.upper()
             })
 
-        data = source.read(1)
+            data = source.read(1)
 
-        if source.nodata is None:
-            mask = (data <= -32766.5) | ~np.isfinite(data)
-            if mask.any():
-                data = data.astype(profile["dtype"], copy=True)
-                data[mask] = self.dem_nodata
+            if source.nodata is None:
+                mask = (data <= -32766.5) | ~np.isfinite(data)
+                if mask.any():
+                    data = data.astype(profile["dtype"], copy=True)
+                    data[mask] = self.dem_nodata
 
-        with rio.open(dem_raw_tif, "w", **profile) as dst:
-            dst.write(data, 1)
-            dst.update_tags(SOURCE=str(dem_img.name))
+            with rio.open(dem_raw_tif, "w", **profile) as dst:
+                dst.write(data, 1)
+                dst.update_tags(SOURCE=str(dem_img.name))
 
-    def _align_dem_to_mono(self, dem_img: Path, mono_tif: Path, dem_aligned_tif: Path):
-        pass
+        return dem_raw_tif
+
+    def _align_dem_to_mono(self, dem_raw_tif: Path, mono_tif: Path, dem_aligned_tif: Path):
+        with rio.open(mono_tif) as reference, rio.open(dem_raw_tif) as source:
+            out_dtype = source.dtypes[0]
+            nodata = source.nodata
+
+            profile = reference.profile.copy()
+            profile.update({
+                "driver": self.driver,
+                "dtype": out_dtype,
+                "count": 1,
+                "compress": self.compressor_dem,
+                "predictor": self.predictor_dem,
+                "tiled": True,
+                "BIGTIFF": "IF_SAFER",
+                "nodata": nodata,
+                "NUM_THREADS": self.num_threads,
+                "OVERVIEW_RESAMPLING": self.overview_method.upper()
+            })
+
+            with rio.open(dem_aligned_tif, "w", **profile) as dst:
+                dest = np.full((reference.height, reference.width), nodata, dtype=out_dtype)
+                reproject(
+                    source=rio.band(source, 1),
+                    destination=dest,
+                    src_transform=source.transform,
+                    src_crs=source.crs,
+                    dst_transform=reference.transform,
+                    dst_crs=reference.crs,
+                    resampling=getattr(Resampling, str(self.resampling.lower())),
+                    dst_nodata=nodata,
+                    num_threads=0,
+                    warp_mem_limit=self.wrap_mem_limit
+                )
+                dst.write(dest, 1)
+                dst.update_tags(
+                    SOURCE=str(dem_raw_tif.name),
+                    ALIGN_TO=str(mono_tif.name),
+                    RESAMPLING=self.resampling
+                )
+        return dem_aligned_tif
