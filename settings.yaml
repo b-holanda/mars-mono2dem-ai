@@ -11,7 +11,7 @@ gdal:
   compressor_dem: "DEFLATE"
   compressor_mono: "DEFLATE"
   blocksize: 512 # 512, 1024
-  wrap_mem_limit: 2147483648 # 536870912, 2147483648
+  wrap_mem_limit: 1610612736 # 536870912, 2147483648
   overview_method: "BILINEAR" # BILINEAR, NEAREST, AVERAGE, CUBIC
   gdal_cache: 16384 # 6144 ou 16384
   num_threads: "ALL_CPUS"
