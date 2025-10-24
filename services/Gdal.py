@@ -21,12 +21,10 @@ class GdalConfig:
     dem_nodata: float
     source_path: str
     samples: int
-    max_workers: int
     driver: str
     compressor_dem: str
     compressor_mono: str
     blocksize: int
-    wrap_mem_limit: int
     overview_method: str
     gdal_cache: int
     num_threads: str
@@ -37,12 +35,10 @@ class Gdal:
         self.resampling = config.resampling
         self.dem_nodata = config.dem_nodata
         self.samples = config.samples
-        self.max_workers = config.max_workers
         self.driver = config.driver
         self.compressor_dem = config.compressor_dem
         self.compressor_mono = config.compressor_mono
         self.blocksize = config.blocksize
-        self.wrap_mem_limit = config.wrap_mem_limit
         self.overview_method = config.overview_method
         self.gdal_cache = config.gdal_cache
         self.num_threads = config.num_threads
@@ -56,8 +52,6 @@ class Gdal:
         console.print("[bold green]Convertendo e alinhando HiRISE [yellow]MONO.JP2 [bold green]e [yellow]DEM.IMG [bold green]para seus respectivos GeoTIFFs.")
 
         scenes = [self.source_path / str(i) for i in range(1, self.samples + 1)]
-        args_list = [(scene,) for scene in scenes]
-        successes = 0
 
         with rio.Env(
             GDAL_CACHEMAX=int(self.gdal_cache),
@@ -65,13 +59,13 @@ class Gdal:
             GDAL_NUM_THREADS=self.num_threads,
         ):
             with console.status(f"[bold green]Convertendo e alinhando cenas") as status:
-                with ProcessPoolExecutor(max_workers=self.max_workers) as ex:
-                    futs = [ex.submit(self.process_scene, *args) for args in args_list]
-                    for f in as_completed(futs):
-                        scene, ok = f.result()
-                        if ok:
-                            successes += 1
-                        console.print(f"[OK] {scene}" if ok else f"[WARN] {scene} not processed")
+                for scene in scenes:
+                    path, success = self.process_scene(scene)
+
+                    if success:
+                        status.console.print(f"[white]cena: {str(path)} convertido com sucesso")
+                    else:
+                        status.console.print(f"[red]cena: {str(path)} falhou")
 
     def process_scene(self, scene):
         jp2 = scene / "MONO.JP2"
@@ -182,7 +176,6 @@ class Gdal:
                     resampling=getattr(Resampling, str(self.resampling.lower())),
                     dst_nodata=nodata,
                     num_threads=0,
-                    warp_mem_limit=self.wrap_mem_limit
                 )
                 dst.write(dest, 1)
                 dst.update_tags(

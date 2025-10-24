@@ -3,16 +3,14 @@ hirise:
   host: "https://www.uahirise.org/PDS"
 
 gdal:
-  resampling: "bilinear" # "nearest","bilinear","cubic"
+  resampling: "bilinear"
   dem_nodata: -32767.0
   source_path: "datasets"
-  max_workers: 4
   driver: "COG"
   compressor_dem: "DEFLATE"
   compressor_mono: "DEFLATE"
   blocksize: 512 # 512, 1024
-  wrap_mem_limit: 536870912 # 536870912, 2147483648
-  overview_method: "BILINEAR" # BILINEAR, NEAREST, AVERAGE, CUBIC
-  gdal_cache: 6144 # 6144 ou 16384
+  overview_method: "BILINEAR"
+  gdal_cache: 6144
   num_threads: "ALL_CPUS"
   predictor_dem: 2
